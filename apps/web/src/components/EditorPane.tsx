@@ -89,7 +89,7 @@ import {
   type NoteLinkSuggestionLabels,
 } from "./editor/NoteLinkSuggestion";
 import { WeChatIcon } from "./WeChatIcon";
-import { useMarkdownTheme } from "./ThemeProvider";
+import { isNamedEditorTheme, useEditorTheme, useMarkdownTheme } from "./ThemeProvider";
 const MarkdownSourceEditor = lazy(() =>
   import("./editor/MarkdownSourceEditor").then((module) => ({
     default: module.MarkdownSourceEditor,
@@ -114,13 +114,12 @@ import { api } from "@/lib/api";
 import { isDesktopResourceRuntime, stageDesktopResource, toDesktopResourceDownloadUrl, toDesktopResourceUrl } from "@/lib/desktop-resources";
 import { contentReferencesStagedResourceUrl, findMatchingMemoResource, repairMemoStagedResourceUrls, repairTiptapStagedResourceUrls } from "@/lib/staged-resource-repair";
 import { cn, formatDateTime, parseTagsText } from "@/lib/utils";
-import { editorContentColumnMaxWidth, type EditorContentWidth } from "@/lib/editor-content-width";
+import { EDITOR_CONTENT_MAX_WIDTH, EDITOR_CONTENT_MAX_WIDTH_COLLAPSED } from "@/lib/workspace-ui";
 import {
   countMemoCharacters,
   createEdgeEverDocumentExtensions,
   docToMarkdown,
   MEMO_CONTENT_STYLE,
-  noteProseCssVariables,
   markdownToDoc,
   normalizeImageGalleries,
   PLUGIN_EMBED_NODE_TYPE,
@@ -129,7 +128,6 @@ import {
   isPdfAttachment,
   resolveMemoContentDoc,
   type Notebook,
-  type ResolvedNoteProse,
   type MemoDetail,
   type MemoSummary,
   type MemoEditSession,
@@ -163,9 +161,11 @@ import {
   writeDesktopReadingProtectionPreference,
   writeEditorOutlineCollapsedPreference,
   writeEditorPhonePreviewPreference,
+  type EditorContentAlignment,
   type MemoDocumentActionRequest,
   type ShortcutSettings,
 } from "@/lib/app-helpers";
+import { isPaperEditorTheme, publishEditorCssVars, resolvePaperEditorTheme } from "@/lib/publish-layout";
 import { ThemeBlock } from "./ThemeBlock";
 import { EditorPhonePreview, PhonePreviewGlyph } from "./EditorPhonePreview";
 import {
@@ -291,8 +291,7 @@ type EditorPaneProps = {
   repository: EdgeEverRepository;
   desktopFocusMode: boolean;
   onToggleDesktopFocusMode: () => void;
-  editorContentWidth: EditorContentWidth;
-  noteProse: ResolvedNoteProse;
+  editorContentAlignment: EditorContentAlignment;
   mobileDefaultEditMemoId: string | null;
   pendingInsertFiles?: { memoId: string; files: File[] } | null;
   onPendingInsertFilesConsumed?: () => void;
@@ -370,8 +369,7 @@ const RichEditorPane = ({
   repository,
   desktopFocusMode,
   onToggleDesktopFocusMode,
-  editorContentWidth,
-  noteProse,
+  editorContentAlignment,
   mobileDefaultEditMemoId,
   pendingInsertFiles = null,
   onPendingInsertFilesConsumed,
@@ -414,11 +412,13 @@ const RichEditorPane = ({
   onRequestMobileNativeEdit,
 }: RichEditorPaneProps) => {
   const { t, i18n } = useTranslation();
+  const { customEditorTheme, editorTheme } = useEditorTheme();
   const { markdownTheme } = useMarkdownTheme();
   const queryClient = useQueryClient();
   const resourceInsertionLimit = useMemo(createFileBatchQueue, []);
   const isSelectionMode = Boolean(selectionActionBar);
   const [title, setTitle] = useState("");
+  const [systemInfoOpen, setSystemInfoOpen] = useState(false);
   const [tagsText, setTagsText] = useState("");
   const {
     dirtyVersion,
@@ -483,9 +483,6 @@ const RichEditorPane = ({
   } = useEditorResourceActions();
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     typeof window === "undefined" ? false : window.matchMedia(MOBILE_EDITOR_QUERY).matches
-  );
-  const [isDesktopColumn, setIsDesktopColumn] = useState(() =>
-    typeof window === "undefined" ? false : window.matchMedia("(min-width: 1024px)").matches
   );
   const [isMobileEditing, setIsMobileEditing] = useState(false);
   const [desktopReadingProtection, setDesktopReadingProtection] = useState(readDesktopReadingProtectionPreference);
@@ -821,14 +818,6 @@ const RichEditorPane = ({
     mediaQuery.addEventListener("change", updateMobileViewport);
 
     return () => mediaQuery.removeEventListener("change", updateMobileViewport);
-  }, []);
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia("(min-width: 1024px)");
-    const updateDesktopColumn = () => setIsDesktopColumn(mediaQuery.matches);
-    updateDesktopColumn();
-    mediaQuery.addEventListener("change", updateDesktopColumn);
-    return () => mediaQuery.removeEventListener("change", updateDesktopColumn);
   }, []);
 
   useEffect(() => {
@@ -2917,6 +2906,7 @@ const RichEditorPane = ({
     historyOpen ||
       shareOpen ||
       aiAssistantOpen ||
+      systemInfoOpen ||
       mobileNotebookSheetOpen ||
       noteLinkPickerOpen ||
       externalLinkDialogOpen ||
@@ -3555,9 +3545,13 @@ const RichEditorPane = ({
       };
 
   const editorColumnMatchesArticle = !useMarkdownSourceEditor;
-  const contentColumnMode = desktopFocusMode ? "focus" : editorOutlineCollapsed ? "collapsed" : "reading";
-  const contentColumnMaxWidth = editorContentColumnMaxWidth(editorContentWidth, contentColumnMode);
-  const focusTitleMaxWidth = editorContentColumnMaxWidth(editorContentWidth, "focus");
+  const editorColumnStyle: CSSProperties | undefined = editorColumnMatchesArticle && !desktopFocusMode && editorContentAlignment === "center"
+    ? {
+        maxWidth: editorOutlineCollapsed
+          ? EDITOR_CONTENT_MAX_WIDTH_COLLAPSED
+          : EDITOR_CONTENT_MAX_WIDTH,
+      }
+    : undefined;
   const savedQuietly = saveState !== "saving"
     && saveState !== "error"
     && saveState !== "conflict"
@@ -3623,18 +3617,16 @@ const RichEditorPane = ({
             className={cn(
               "flex min-w-0 flex-1",
               desktopFocusMode && "mx-auto w-full max-w-[1400px]",
+              editorColumnMatchesArticle && editorContentAlignment === "center" && "justify-center",
             )}
             style={editorColumnMatchesArticle && editorScrollbarGutter > 0 ? { paddingRight: editorScrollbarGutter } : undefined}
           >
           <div
             className={cn(
               "min-w-0 w-full",
-              isDesktopColumn && desktopFocusMode && "mx-auto",
+              desktopFocusMode && "mx-auto max-w-[960px]",
             )}
-            style={{
-              ...(isDesktopColumn && desktopFocusMode ? { maxWidth: focusTitleMaxWidth } : {}),
-              ...(titleStatusClearancePx > 0 ? { paddingRight: titleStatusClearancePx } : {}),
-            }}
+            style={titleStatusClearancePx > 0 ? { paddingRight: titleStatusClearancePx } : undefined}
           >
           <div
             ref={setHeaderTitleSlot}
@@ -3780,16 +3772,10 @@ const RichEditorPane = ({
             {!readOnly && (!mobileEditingActive || isMemoShared) && (
               <IconTooltip label={t(isLocalMemoId(memo.id) ? "sharing.afterSync" : isMemoShared ? "sharing.manage" : "sharing.action")}>
                 <Button
-                  className={cn(
-                    "h-8 w-8",
-                    isMemoShared
-                      ? "bg-[#d4d4d4] text-[#2a2a2a] hover:bg-[#e4e4e4] hover:text-[#2a2a2a]"
-                      : "text-slate-500",
-                  )}
+                  className={cn("h-8 w-8", isMemoShared ? "text-slate-700" : "text-slate-500")}
                   size="icon"
                   variant="ghost"
                   type="button"
-                  aria-pressed={isMemoShared}
                   aria-label={t(isLocalMemoId(memo.id) ? "sharing.afterSync" : isMemoShared ? "sharing.manage" : "sharing.action")}
                   disabled={isLocalMemoId(memo.id)}
                   onClick={() => setShareOpen(true)}
@@ -3851,6 +3837,7 @@ const RichEditorPane = ({
               moreMenuClassName="w-56 rounded-md"
               onOpenExecutionCenter={onOpenExecutionCenter}
               onSearch={() => openNoteSearch()}
+              onSystemInfoOpenChange={setSystemInfoOpen}
               textNoteActions={(
                 <>
                   {!effectiveReadOnly && (
@@ -4062,11 +4049,42 @@ const RichEditorPane = ({
 
       <div
         ref={setEditorScrollContainerRef}
-        data-editor-theme="default"
-        data-note-palette={noteProse.palette}
+        data-editor-theme={isNamedEditorTheme(editorTheme) ? editorTheme : "custom"}
+        data-paper-theme={isPaperEditorTheme(editorTheme) ? "true" : undefined}
+        data-publish-surface={isMobileViewport ? "phone" : "desktop"}
         style={{
-          ...noteProseCssVariables(noteProse),
+          ...(isPaperEditorTheme(editorTheme)
+            ? publishEditorCssVars(
+                editorTheme,
+                resolvePaperEditorTheme(editorTheme)?.palette ?? "emerald",
+                isMobileViewport ? "phone" : "desktop",
+              )
+            : {
+                "--editor-body-font-size": `${MEMO_CONTENT_STYLE.body.fontSize}px`,
+                "--editor-body-line-height": String(MEMO_CONTENT_STYLE.body.lineHeight / MEMO_CONTENT_STYLE.body.fontSize),
+                "--editor-paragraph-spacing": `${MEMO_CONTENT_STYLE.body.paragraphSpacing}px`,
+              }),
           "--memo-content-divider-spacing": `${MEMO_CONTENT_STYLE.divider.marginVertical}px`,
+          ...(!isNamedEditorTheme(editorTheme)
+            ? {
+                "--editor-theme-light-bg": customEditorTheme.light.background,
+                "--editor-theme-light-text": customEditorTheme.light.text,
+                "--editor-theme-light-muted": customEditorTheme.light.muted,
+                "--editor-theme-light-heading": customEditorTheme.light.heading,
+                "--editor-theme-light-accent": customEditorTheme.light.accent,
+                "--editor-theme-light-soft": customEditorTheme.light.soft,
+                "--editor-theme-light-code-bg": customEditorTheme.light.codeBackground,
+                "--editor-theme-light-border": customEditorTheme.light.border,
+                "--editor-theme-dark-bg": customEditorTheme.dark.background,
+                "--editor-theme-dark-text": customEditorTheme.dark.text,
+                "--editor-theme-dark-muted": customEditorTheme.dark.muted,
+                "--editor-theme-dark-heading": customEditorTheme.dark.heading,
+                "--editor-theme-dark-accent": customEditorTheme.dark.accent,
+                "--editor-theme-dark-soft": customEditorTheme.dark.soft,
+                "--editor-theme-dark-code-bg": customEditorTheme.dark.codeBackground,
+                "--editor-theme-dark-border": customEditorTheme.dark.border,
+              }
+            : {}),
         } as CSSProperties}
         className={cn(
           "edgeever-editor relative min-h-0 flex-1 bg-transparent",
@@ -4079,13 +4097,13 @@ const RichEditorPane = ({
               : "overflow-y-auto lg:[scrollbar-gutter:stable_both-edges]"
         )}
       >
-        {noteProse.customCss.trim() ? (
+        {!isNamedEditorTheme(editorTheme) && customEditorTheme.customCss && (
             <style
               data-theme-custom-css
-              data-original-css={noteProse.customCss}
-              dangerouslySetInnerHTML={{ __html: sanitizeAndScopeCss(noteProse.customCss) }}
+              data-original-css={customEditorTheme.customCss}
+              dangerouslySetInnerHTML={{ __html: sanitizeAndScopeCss(customEditorTheme.customCss) }}
             />
-          ) : null}
+          )}
         <div
           onClickCapture={
             !useMobilePlainTextEditor && !useMarkdownSourceEditor
@@ -4099,18 +4117,28 @@ const RichEditorPane = ({
               : cn("min-h-full items-start py-2", MEMO_EDITOR_READING_GUTTER_CLASS_NAME),
             desktopFocusMode
               ? "mx-auto w-full max-w-[1400px] justify-center"
-              : isDesktopColumn
+              : editorContentAlignment === "center"
                 ? "w-full justify-center"
-                : "w-full"
+                : "w-full justify-between"
           )}
         >
           <div
             className={cn(
               "min-w-0 flex-1 transition-[max-width] duration-200",
               useMarkdownSourceEditor && "flex h-full min-h-0 flex-col",
-              isDesktopColumn && "mx-auto",
+              desktopFocusMode
+                ? "max-w-[960px]"
+                : "max-w-none"
             )}
-            style={isDesktopColumn ? { maxWidth: contentColumnMaxWidth } : undefined}
+            style={
+              !desktopFocusMode && !useMarkdownSourceEditor && editorContentAlignment === "center"
+                ? {
+                    maxWidth: editorOutlineCollapsed
+                      ? EDITOR_CONTENT_MAX_WIDTH_COLLAPSED
+                      : EDITOR_CONTENT_MAX_WIDTH,
+                  }
+                : undefined
+            }
           >
             {useMobilePlainTextEditor ? (
               <>
@@ -4130,13 +4158,7 @@ const RichEditorPane = ({
                   aria-label={t("editor.noteBodyAria")}
                   className="block min-h-[60dvh] w-full resize-none border border-slate-200 bg-card px-4 py-3 pr-32 text-base leading-7 text-slate-950 outline-none placeholder:text-slate-400 sm:px-7"
                   placeholder={t("editor.placeholder")}
-                  style={{
-                    WebkitUserSelect: "text",
-                    userSelect: "text",
-                    caretColor: "auto",
-                    fontSize: `${noteProse.fontSize}px`,
-                    lineHeight: String(noteProse.lineHeight),
-                  }}
+                  style={{ WebkitUserSelect: "text", userSelect: "text", caretColor: "auto" }}
                 />
                 <div className="absolute right-3 top-3 flex gap-2">
                   <button
@@ -4213,7 +4235,6 @@ const RichEditorPane = ({
               editor={editor}
               title={getEditableMemoTitle(memo?.title)}
               scrollContainer={editorScrollContainer}
-              noteProse={noteProse}
             />
           )}
           {!isMobileViewport && !useMobilePlainTextEditor && !useMarkdownSourceEditor && !phonePreviewOpen && (
